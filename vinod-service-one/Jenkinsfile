@@ -1,0 +1,58 @@
+pipeline {
+    agent any
+    
+    tools {
+        maven 'maven-362'
+        jdk 'jdk-8'
+    }
+    environment {
+        IMAGE = readMavenPom().getArtifactId()
+        FINAL_NAME = readMavenPom().getBuild().getFinalName()
+    }
+    stages {
+        stage ('Clean') {
+            steps {
+                sh "mvn clean"
+            }
+        }
+        stage ('Test and Build') {
+            steps {
+                sh "mvn package"
+            }
+        }
+        stage('JaCoCo Report') {
+            steps {
+                junit 'target/surefire-reports/TEST-*.xml'
+                step( [ $class: 'JacocoPublisher' ] )
+            }
+        }
+        stage('Sonar Analysis, Quality Gate') {
+            steps {
+                withSonarQubeEnv('SonarServer') {
+                    sh "mvn sonar:sonar"
+                }
+                
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        stage ('Docker Image') {
+            steps {
+                sh "(docker stop ${FINAL_NAME}-container || true) && (docker rm ${FINAL_NAME}-container || true) && (docker rmi ${FINAL_NAME} || true)"
+            }
+        }
+        stage ('Docker Run') {
+            steps {
+                sh "docker build ./ -t ${FINAL_NAME} && docker run -d -p 3500:3500 --name ${FINAL_NAME}-container ${FINAL_NAME}"
+            }
+        }
+    }
+    post {
+    	always{
+    		archiveArtifacts artifacts: '**/*.jar', fingerprint: true
+    		junit '**/*.xml'
+    		cleanWs()
+		}
+	}
+}
